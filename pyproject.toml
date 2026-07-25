@@ -21,6 +21,9 @@ dependencies = [
     "pydantic-settings>=2.16",
 ]
 
+[project.scripts]
+support-agent = "support_agent.cli:main"
+
 [project.optional-dependencies]
 dev = [
     "pytest>=9.1",
