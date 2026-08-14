@@ -1,17 +1,9 @@
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from support_agent.kb import Article, KnowledgeBase, parse_article, tokenize
-
-KB_DIR = Path(__file__).resolve().parents[1] / "kb"
-
-
-@pytest.fixture(scope="module")
-def kb() -> KnowledgeBase:
-    return KnowledgeBase.from_directory(KB_DIR)
+from tests.conftest import KB_DIR
 
 
 def test_tokenize_drops_stopwords_and_stems() -> None:

@@ -1,4 +1,4 @@
-"""Data access and business rules for orders and refunds.
+"""Data access and business rules for orders, refunds and support tickets.
 
 Each operation opens its own short-lived SQLite connection, so a repository can be
 shared freely between threads (graph nodes run tools in worker threads).
@@ -11,10 +11,13 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from support_agent.db import transaction, utc_now_iso
 from support_agent.money import format_cents
+
+TicketCategory = Literal["billing", "technical", "order_status", "escalation", "other"]
+TicketPriority = Literal["low", "normal", "high", "urgent"]
 
 AUTO_APPROVER = "auto"
 """``approved_by`` value for refunds that did not need a human reviewer."""
@@ -165,8 +168,42 @@ class Refund:
         }
 
 
+@dataclass(frozen=True)
+class Ticket:
+    id: str
+    customer_id: str | None
+    order_id: str | None
+    category: str
+    priority: str
+    subject: str
+    description: str
+    status: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ticket_id": self.id,
+            "customer_id": self.customer_id,
+            "order_id": self.order_id,
+            "category": self.category,
+            "priority": self.priority,
+            "subject": self.subject,
+            "status": self.status,
+        }
+
+
 def _refund_id(row_id: int) -> str:
     return f"REF-{row_id:06d}"
+
+
+def _ticket_id(row_id: int) -> str:
+    return f"TCK-{row_id:06d}"
+
+
+def _ticket_row_id(ticket_id: str) -> int:
+    prefix, _, number = ticket_id.partition("-")
+    if prefix != "TCK" or not number.isdigit():
+        raise NotFoundError(f"Ticket {ticket_id} was not found.")
+    return int(number)
 
 
 class SupportRepository:
@@ -336,4 +373,64 @@ class SupportRepository:
             amount_cents=amount_cents,
             reason=reason,
             approved_by=approved_by,
+        )
+
+    # -- tickets --------------------------------------------------------------------------
+
+    def create_ticket(
+        self,
+        *,
+        subject: str,
+        description: str,
+        category: TicketCategory,
+        priority: TicketPriority = "normal",
+        customer_id: str | None = None,
+        order_id: str | None = None,
+    ) -> Ticket:
+        with transaction(self.path) as conn:
+            if customer_id is not None and (
+                conn.execute("SELECT 1 FROM customers WHERE id = ?", (customer_id,)).fetchone()
+                is None
+            ):
+                raise NotFoundError(f"Customer {customer_id} was not found.")
+            if order_id is not None:
+                order = conn.execute(
+                    "SELECT customer_id FROM orders WHERE id = ?", (order_id,)
+                ).fetchone()
+                if order is None:
+                    raise NotFoundError(f"Order {order_id} was not found.")
+                customer_id = customer_id or order["customer_id"]
+            cursor = conn.execute(
+                "INSERT INTO tickets (customer_id, order_id, category, priority, subject,"
+                " description, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (customer_id, order_id, category, priority, subject, description, utc_now_iso()),
+            )
+            row_id = int(cursor.lastrowid or 0)
+        return Ticket(
+            id=_ticket_id(row_id),
+            customer_id=customer_id,
+            order_id=order_id,
+            category=category,
+            priority=priority,
+            subject=subject,
+            description=description,
+            status="open",
+        )
+
+    def get_ticket(self, ticket_id: str) -> Ticket:
+        with transaction(self.path) as conn:
+            row = conn.execute(
+                "SELECT * FROM tickets WHERE id = ?", (_ticket_row_id(ticket_id),)
+            ).fetchone()
+        if row is None:
+            raise NotFoundError(f"Ticket {ticket_id} was not found.")
+        return Ticket(
+            id=_ticket_id(row["id"]),
+            customer_id=row["customer_id"],
+            order_id=row["order_id"],
+            category=row["category"],
+            priority=row["priority"],
+            subject=row["subject"],
+            description=row["description"],
+            status=row["status"],
         )
