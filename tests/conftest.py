@@ -36,3 +36,8 @@ def kb() -> KnowledgeBase:
 @pytest.fixture
 def toolkit(repository: SupportRepository, kb: KnowledgeBase) -> Toolkit:
     return Toolkit(repository, kb)
+
+
+@pytest.fixture
+def anyio_backend() -> str:
+    return "asyncio"
