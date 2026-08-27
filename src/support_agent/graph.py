@@ -3,11 +3,14 @@
 ::
 
     START -> router -> <specialist> -> supervisor -> tools -> <active specialist> ...
+                                                 \\-> approval -> tools    (large refunds)
                                                  \\-> <other specialist>   (handoff)
                                                  \\-> respond -> END
 
 Every specialist reply goes to the supervisor, which is the single place where the
-per-turn guardrails are enforced: the tool-call budget and the handoff policy.
+per-turn guardrails are enforced: the tool-call budget, the handoff policy and the
+human review of refunds above the approval threshold. The approval node pauses the
+graph with ``interrupt``; with a checkpointer the paused thread survives restarts.
 """
 
 from __future__ import annotations
@@ -18,14 +21,21 @@ from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolCall
+from langchain_core.messages import (
+    AIMessage,
+    HumanMessage,
+    SystemMessage,
+    ToolCall,
+    ToolMessage,
+)
 from langchain_core.utils.function_calling import convert_to_openai_tool
 from langgraph.checkpoint.base import BaseCheckpointSaver
 from langgraph.graph import END, START, StateGraph
 from langgraph.graph.state import CompiledStateGraph
-from langgraph.types import Command
+from langgraph.types import Command, interrupt
 from pydantic import BaseModel, Field, ValidationError
 
+from support_agent.approvals import ReviewDecision, approval_request, refunds_needing_review
 from support_agent.money import format_cents
 from support_agent.prompts import specialist_prompt
 from support_agent.repository import Ticket
@@ -126,6 +136,7 @@ class SupportWorkflow:
             graph.add_node(name, self._specialist(name))
             graph.add_edge(name, "supervisor")
         graph.add_node("supervisor", self.supervisor)
+        graph.add_node("approval", self.approval)
         graph.add_node("tools", self.tools)
         graph.add_node("respond", self.respond)
 
@@ -165,7 +176,11 @@ class SupportWorkflow:
 
     async def supervisor(
         self, state: SupportState
-    ) -> Command[Literal["tools", "respond", "billing", "technical", "order_status", "escalation"]]:
+    ) -> Command[
+        Literal[
+            "tools", "approval", "respond", "billing", "technical", "order_status", "escalation"
+        ]
+    ]:
         last = state["messages"][-1]
         calls = last.tool_calls if isinstance(last, AIMessage) else []
         if not calls:
@@ -188,6 +203,8 @@ class SupportWorkflow:
         transfers = [c for c in calls if c["name"] == TRANSFER_TOOL]
         if transfers:
             return self._handoff(state, calls, transfers[0])
+        if refunds_needing_review(calls, self.threshold_cents, state.get("refund_decisions", {})):
+            return Command(goto="approval")
         return Command(goto="tools")
 
     def _handoff(
@@ -245,11 +262,50 @@ class SupportWorkflow:
             },
         )
 
+    async def approval(self, state: SupportState) -> Command[Literal["tools"]]:
+        """Pause until a human approves or rejects the large refunds in the last reply.
+
+        Nothing before ``interrupt`` has side effects, because LangGraph re-runs the
+        whole node when the thread is resumed.
+        """
+        last = state["messages"][-1]
+        calls = last.tool_calls if isinstance(last, AIMessage) else []
+        decisions = dict(state.get("refund_decisions", {}))
+        pending = refunds_needing_review(calls, self.threshold_cents, decisions)
+        if not pending:
+            return Command(goto="tools")
+
+        request = approval_request(
+            pending, threshold_cents=self.threshold_cents, customer_id=state.get("customer_id")
+        )
+        decision = ReviewDecision.model_validate(interrupt(request))
+        logger.info(
+            "Reviewer %s %s %d refund(s)",
+            decision.reviewer,
+            "approved" if decision.approved else "rejected",
+            len(pending),
+        )
+        decisions.update({refund.tool_call_id: decision.model_dump() for refund in pending})
+        return Command(goto="tools", update={"refund_decisions": decisions})
+
     async def tools(self, state: SupportState) -> dict[str, Any]:
         last = state["messages"][-1]
         calls = last.tool_calls if isinstance(last, AIMessage) else []
-        context = ToolContext(customer_id=state.get("customer_id"))
-        results = [await asyncio.to_thread(self.toolkit.execute, c, context) for c in calls]
+        decisions = state.get("refund_decisions", {})
+        customer_id = state.get("customer_id")
+        results: list[ToolMessage] = []
+        for call in calls:
+            decision = decisions.get(call["id"] or "") if call["name"] == ISSUE_REFUND else None
+            if decision is not None and not decision["approved"]:
+                note = f": {decision['note']}" if decision.get("note") else "."
+                error = f"The refund was rejected by reviewer {decision['reviewer']}{note}"
+                results.append(tool_message(call, {"error": error}, error=True))
+                continue
+            context = ToolContext(
+                customer_id=customer_id,
+                reviewer=decision["reviewer"] if decision is not None else None,
+            )
+            results.append(await asyncio.to_thread(self.toolkit.execute, call, context))
         return {
             "messages": results,
             "tool_calls_this_turn": state.get("tool_calls_this_turn", 0) + len(calls),

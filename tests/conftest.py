@@ -5,6 +5,7 @@ from pathlib import Path
 
 import pytest
 
+from support_agent.config import Settings
 from support_agent.db import create_demo_database
 from support_agent.kb import KnowledgeBase
 from support_agent.repository import RefundPolicy, SupportRepository
@@ -41,3 +42,14 @@ def toolkit(repository: SupportRepository, kb: KnowledgeBase) -> Toolkit:
 @pytest.fixture
 def anyio_backend() -> str:
     return "asyncio"
+
+
+@pytest.fixture
+def settings(tmp_path: Path) -> Settings:
+    runtime_dir = tmp_path / "runtime"
+    return Settings(
+        _env_file=None,
+        database_path=runtime_dir / "support.db",
+        checkpoint_path=runtime_dir / "checkpoints.db",
+        kb_dir=KB_DIR,
+    )

@@ -164,19 +164,6 @@ async def test_step_limit_ends_the_turn_with_a_ticket(
     assert "my app will not sync" in ticket.description
 
 
-async def test_refunds_above_threshold_are_blocked_without_review(toolkit: Toolkit) -> None:
-    flow, _ = workflow(
-        toolkit,
-        [
-            route("billing"),
-            calls("issue_refund", order_id="ORD-10002", amount=349, reason="Wobbly desk"),
-            "I could not issue that refund.",
-        ],
-    )
-    state = await run(flow, "refund ORD-10002", "CUST-1001")
-    assert "human reviewer" in tool_results(state["messages"])[0][1]["error"]
-
-
 async def test_empty_reply_gets_a_fallback(toolkit: Toolkit) -> None:
     flow, _ = workflow(toolkit, [route("technical"), ""])
     state = await run(flow, "hmm")
