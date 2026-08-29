@@ -8,6 +8,7 @@ from langchain_openai import ChatOpenAI
 from pydantic import BaseModel
 
 from support_agent.config import Settings
+from support_agent.demo_policy import DemoPolicy
 from support_agent.llm import (
     FakeChatModel,
     ScriptedResponder,
@@ -82,8 +83,9 @@ def test_streaming_tool_calls_reassemble() -> None:
 def test_factory_builds_fake_with_responder() -> None:
     model = build_chat_model(Settings(_env_file=None), responder=ScriptedResponder(["ok"]))
     assert isinstance(model, FakeChatModel)
-    with pytest.raises(ValueError, match="responder"):
-        build_chat_model(Settings(_env_file=None))
+    default = build_chat_model(Settings(_env_file=None))
+    assert isinstance(default, FakeChatModel)
+    assert isinstance(default.responder, DemoPolicy)
 
 
 def test_factory_builds_openai_compatible_client() -> None:

@@ -151,11 +151,15 @@ class FakeChatModel(BaseChatModel):
 def build_chat_model(settings: Settings, *, responder: Responder | None = None) -> BaseChatModel:
     """Create the chat model selected by ``settings.provider``.
 
-    The ``fake`` provider needs a ``responder`` that scripts its replies.
+    For the ``fake`` provider, ``responder`` defaults to the rule-based
+    :class:`~support_agent.demo_policy.DemoPolicy`.
     """
     if settings.provider == "fake":
         if responder is None:
-            raise ValueError("The fake provider needs a responder to script its replies.")
+            # Imported here because the demo policy depends on the graph module.
+            from support_agent.demo_policy import DemoPolicy
+
+            responder = DemoPolicy()
         return FakeChatModel(responder=responder)
 
     api_key = settings.openai_api_key.get_secret_value() if settings.openai_api_key else None
