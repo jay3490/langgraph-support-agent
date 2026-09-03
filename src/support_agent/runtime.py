@@ -190,6 +190,8 @@ class SupportRuntime:
         if self._pending(snapshot) is not None:
             raise ApprovalPendingError(thread_id)
         lock = self._lock(thread_id)
+        # Customer text can contain personal data; the logging filter masks it.
+        logger.info("Thread %s received: %s", thread_id, text)
         return self._stream(thread_id, {"messages": [HumanMessage(text)]}, lock)
 
     async def resume(self, thread_id: str, decision: ReviewDecision) -> AsyncIterator[TurnEvent]:
