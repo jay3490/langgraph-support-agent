@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import argparse
+import asyncio
+import sys
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -38,6 +40,45 @@ def _serve(args: argparse.Namespace) -> int:
     return 0
 
 
+def _write(text: str) -> None:
+    sys.stdout.write(text)
+    sys.stdout.flush()
+
+
+async def _chat_session(args: argparse.Namespace) -> None:
+    from support_agent.chat import run_chat
+    from support_agent.runtime import open_runtime
+
+    async with open_runtime(get_settings()) as runtime:
+        await run_chat(
+            runtime,
+            read_line=input,
+            write=_write,
+            customer_id=args.customer,
+            thread_id=args.thread,
+            reviewer=args.reviewer,
+        )
+
+
+def _chat(args: argparse.Namespace) -> int:
+    from support_agent.repository import NotFoundError
+    from support_agent.runtime import ThreadNotFoundError
+
+    # Keep the terminal for the conversation; warnings and errors still show (masked).
+    configure_logging("WARNING")
+    try:
+        asyncio.run(_chat_session(args))
+    except ThreadNotFoundError as exc:
+        print(f"Thread {exc} was not found.", file=sys.stderr)
+        return 1
+    except NotFoundError as exc:
+        print(str(exc), file=sys.stderr)
+        return 1
+    except KeyboardInterrupt:
+        print()
+    return 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="support-agent", description="Multi-agent customer-support workflow."
@@ -53,6 +94,14 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--host", help="bind address (default: SUPPORT_HOST)")
     serve.add_argument("--port", type=int, help="port (default: SUPPORT_PORT)")
     serve.set_defaults(handler=_serve)
+
+    chat = commands.add_parser("chat", help="talk to the agents in the terminal")
+    chat.add_argument("--customer", help="customer id the conversation is about, e.g. CUST-1001")
+    chat.add_argument("--thread", help="resume an existing thread")
+    chat.add_argument(
+        "--reviewer", default="terminal", help="name recorded when you approve a refund"
+    )
+    chat.set_defaults(handler=_chat)
 
     return parser
 
