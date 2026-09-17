@@ -1,0 +1,36 @@
+# Default: the API with the credential-free fake provider.
+#   docker compose up --build
+#
+# With a local Ollama server through its OpenAI-compatible endpoint:
+#   SUPPORT_PROVIDER=openai docker compose --profile ollama up --build
+#   docker compose exec ollama ollama pull llama3.2
+# The model must support tool calling.
+
+services:
+  api:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      SUPPORT_PROVIDER: ${SUPPORT_PROVIDER:-fake}
+      SUPPORT_MODEL: ${SUPPORT_MODEL:-llama3.2}
+      SUPPORT_OPENAI_BASE_URL: ${SUPPORT_OPENAI_BASE_URL:-http://ollama:11434/v1}
+      SUPPORT_OPENAI_API_KEY: ${SUPPORT_OPENAI_API_KEY:-}
+      SUPPORT_REFUND_APPROVAL_THRESHOLD: ${SUPPORT_REFUND_APPROVAL_THRESHOLD:-100.00}
+      SUPPORT_LOG_LEVEL: ${SUPPORT_LOG_LEVEL:-INFO}
+    volumes:
+      - support-var:/app/var
+    restart: unless-stopped
+
+  ollama:
+    image: ollama/ollama:latest
+    profiles: ["ollama"]
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama-models:/root/.ollama
+    restart: unless-stopped
+
+volumes:
+  support-var:
+  ollama-models:
